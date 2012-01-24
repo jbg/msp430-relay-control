@@ -27,10 +27,10 @@ bool has_received;
 void transmit(void);
 
 int main(void) {
-    WDTCTL = WDTPW + WDTHOLD; // Stop the watchdog timer
+    WDTCTL = WDTPW + WDTHOLD; // stop the watchdog timer
 
-    BCSCTL1 = CALBC1_1MHZ;
-    DCOCTL = CALDCO_1MHZ;
+    BCSCTL1 = CALBC1_1MHZ; // set range
+    DCOCTL = CALDCO_1MHZ;  // SMCLK = DCO = 1MHz
 
     P1SEL |= SER_TXD;
     P1DIR |= SER_TXD + RELAY;
@@ -39,23 +39,21 @@ int main(void) {
 
     P1IES |= SER_RXD;  // enable RXD hi/lo edge interrupt
     P1IFG &= ~SER_RXD; // clear RXD flag before enabling interrupt
-    P1IE |= SER_RXD;   // enable interrupt
+    P1IE |= SER_RXD;   // enable RXD interrupt
 
     is_receiving = false;
     has_received = false;
 
-    __bis_SR_register(GIE);
+    __bis_SR_register(GIE); // globally enable interrupts
 
     while (1) {
         if (has_received) {
             has_received = false;
             if (rx_byte == 'I') {
-                // 0x1 means pull port high (turn off relay)
-                P1OUT |= RELAY;
+                P1OUT |= RELAY; // pull port high
             }
             else if (rx_byte == 'O') {
-                // 0x2 means pull port low (turn on relay)
-                P1OUT &= ~RELAY;
+                P1OUT &= ~RELAY; // pull port low
             }
 
             // echo the received byte back to the sender
@@ -63,6 +61,8 @@ int main(void) {
             transmit();
         }
 
+        // if there is not another value received, turn off the CPU until an interrupt occurs
+        // (power saving)
         if (~has_received)
             __bis_SR_register(CPUOFF + GIE);
     }
@@ -70,76 +70,76 @@ int main(void) {
 
 // place a character in tx_byte and call this to transmit it.
 void transmit(void) {
-    while (is_receiving);
-    CCTL0 = OUT;
-    TACTL = TASSEL_2 + MC_2;
+    while (is_receiving); // half-duplex: wait until RX is complete
+    CCTL0 = OUT; // TXD idle as mark
+    TACTL = TASSEL_2 + MC_2; // SMCLK continuous
 
-    bit_count = 0xa;
-    CCR0 = TAR;
+    bit_count = 0xa; // load bit counter, 8 bits + start + stop
+    CCR0 = TAR; // initialise compare reg
 
-    CCR0 += BIT_TIME;
-    tx_byte |= 0x100;
-    tx_byte = tx_byte << 1;
+    CCR0 += BIT_TIME; // set time until first bit
+    tx_byte |= 0x100; // add stop bit (logical 1) to tx_byte
+    tx_byte = tx_byte << 1; // add start bit (logical 0)
 
-    CCTL0 = CCIS0 + OUTMOD0 + CCIE;
-    while (CCTL0 & CCIE);
+    CCTL0 = CCIS0 + OUTMOD0 + CCIE; // set signal, initial value, enable interrupts
+    while (CCTL0 & CCIE); // wait for previous TX completion
 }
 
 __attribute__((interrupt(PORT1_VECTOR)))
 void PORT1_ISR(void) {
     is_receiving = true;
 
-    P1IE &= ~SER_RXD;
-    P1IFG &= ~SER_RXD;
+    P1IE &= ~SER_RXD; // disable RXD interrupt
+    P1IFG &= ~SER_RXD; // clear interrupt flag
 
-    TACTL = TASSEL_2 + MC_2;
-    CCR0 = TAR;
-    CCR0 += HALF_BIT_TIME;
-    CCTL0 = OUTMOD1 + CCIE;
+    TACTL = TASSEL_2 + MC_2; // SMCLK continuous mode
+    CCR0 = TAR; // initialise compare register
+    CCR0 += HALF_BIT_TIME; // set time until first bit
+    CCTL0 = OUTMOD1 + CCIE; // disable TX and enable interrupts
 
-    rx_byte = 0;
-    bit_count = 0x9;
+    rx_byte = 0; // initialise rx_byte
+    bit_count = 0x9; // load bit counter, 8 bits + start
 }
 
 __attribute__((interrupt(TIMERA0_VECTOR)))
 void TIMERA0_ISR(void) {
     if (!is_receiving) {
-        CCR0 += BIT_TIME;
-        if (bit_count == 0) {
-            TACTL = TASSEL_2;
-            CCTL0 &= ~CCIE;
+        CCR0 += BIT_TIME; // add offset to CCR0
+        if (bit_count == 0) { // if all bits sent
+            TACTL = TASSEL_2; // SMCLK timer off (power saving)
+            CCTL0 &= ~CCIE; // disable interrupt
         }
         else {
-            CCTL0 |= OUTMOD2;
+            CCTL0 |= OUTMOD2; // set TX bit to 0
             if (tx_byte & 0x01)
-                CCTL0 &= ~OUTMOD2;
+                CCTL0 &= ~OUTMOD2; // if it should be 1, set it so
             tx_byte = tx_byte >> 1;
             --bit_count;
         }
     }
     else {
-        CCR0 += BIT_TIME;
+        CCR0 += BIT_TIME; // add offset to CCR0
         if (bit_count == 0) {
-            TACTL = TASSEL_2;
-            CCTL0 &= ~CCIE;
+            TACTL = TASSEL_2; // SMCLK timer off (power saving)
+            CCTL0 &= ~CCIE; // disable interrupt
 
             is_receiving = false;
 
-            P1IFG &= ~SER_RXD;
-            P1IE |= SER_RXD;
+            P1IFG &= ~SER_RXD; // clear RXD interrupt flag
+            P1IE |= SER_RXD; // enable RXD interrupt
 
-            if ((rx_byte & 0x201) == 0x200) {
-                rx_byte = rx_byte >> 1;
-                rx_byte &= 0xff;
+            if ((rx_byte & 0x201) == 0x200) { // validate start and stop bits
+                rx_byte = rx_byte >> 1; // remove start bit
+                rx_byte &= 0xff; // remove stop bit
                 has_received = true;
             }
 
-            __bic_SR_register_on_exit(CPUOFF);
+            __bic_SR_register_on_exit(CPUOFF); // enable CPU so that main while loop continues
         }
         else {
-            if ((P1IN & SER_RXD) == SER_RXD)
-                rx_byte |= 0x400;
-            rx_byte = rx_byte >> 1;
+            if ((P1IN & SER_RXD) == SER_RXD) // if bit is set
+                rx_byte |= 0x400; // set value in rx_byte
+            rx_byte = rx_byte >> 1; // shift bits down
             --bit_count;
         }
     }
