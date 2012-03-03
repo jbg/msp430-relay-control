@@ -1,10 +1,10 @@
-// This program allows control of P1.0 via the backchannel serial
+// This program allows control of P1.0 and P2.0 via the backchannel serial
 // interface on the Launchpad. In order to achieve this, an
 // interrupt-based half-duplex software UART implementation is
 // included.
 //
 // Connect to the Launchpad at 9600 8N1 and send 'I' to set P1.0 high
-// or 'O' to set P1.0 low.
+// or 'O' to set P1.0 low, 'J' to set P2.0 high or 'P' to set P2.0 low
 
 #include <msp430.h>
 #include <msp430g2231.h>
@@ -34,8 +34,10 @@ int main(void) {
 
     P1SEL |= SER_TXD;
     P1DIR |= SER_TXD + RELAY;
+    P2DIR |= RELAY;
 
     P1OUT |= RELAY;
+    P2OUT |= RELAY;
 
     P1IES |= SER_RXD;  // enable RXD hi/lo edge interrupt
     P1IFG &= ~SER_RXD; // clear RXD flag before enabling interrupt
@@ -50,10 +52,16 @@ int main(void) {
         if (has_received) {
             has_received = false;
             if (rx_byte == 'I') {
-                P1OUT |= RELAY; // pull port high
+                P1OUT |= RELAY; // pull relay 1 high
+            }
+            else if (rx_byte == 'J') {
+                P2OUT |= RELAY; // pull relay 2 high
             }
             else if (rx_byte == 'O') {
-                P1OUT &= ~RELAY; // pull port low
+                P1OUT &= ~RELAY; // pull relay 1 low
+            }
+            else if (rx_byte == 'P') {
+                P2OUT &= ~RELAY; // pull relay 2 low
             }
 
             // echo the received byte back to the sender
